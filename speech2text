@@ -1,0 +1,83 @@
+#!/usr/bin/env php
+<?php
+
+# load .env file:
+$fdata = file_get_contents("~/.openai_keys");
+$lines = explode("\n", $fdata);
+foreach ($lines as $line) {
+    if (trim($line)) {
+        $kv = explode("=", $line);
+        $key = $kv[0];
+        $val = json_decode($kv[1], true);
+        $_ENV[$key] = $val;
+    }
+}
+
+function convertVideoToMp3($inputFilePath, $outputFilePath, $bitrate = "96k") {
+    $cmd = "ffmpeg -y -i " . escapeshellarg($inputFilePath) . " -vn -acodec libmp3lame -b:a " . escapeshellarg($bitrate) . " " . escapeshellarg($outputFilePath) . " 2>/dev/null";
+    exec($cmd, $output, $returnCode);
+
+    if ($returnCode === 0) {
+        return;
+    } else {
+        throw new Exception("Conversion failed with code $returnCode");
+    }
+}
+
+function transcribeAudio($filePath, $model = "whisper-1") {
+    $url = 'https://api.openai.com/v1/audio/transcriptions';
+
+    $headers = [
+        'Authorization: Bearer ' . $_ENV['OPENAI_API_KEY'],
+        'Content-Type: multipart/form-data',
+    ];
+
+    $postFields = [
+        'model' => $model,
+        'file' => new CURLFile($filePath),
+    ];
+
+    $ch = curl_init();
+    curl_setopt($ch, CURLOPT_URL, $url);
+    curl_setopt($ch, CURLOPT_POST, 1);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+
+    if ($httpCode === 200) {
+        $responseBody = json_decode($response, true);
+        return $responseBody;
+    } else {
+        throw new Exception("Transcription failed with status code $httpCode");
+    }
+}
+
+$inputFile = $argv[1] ?? NULL;
+$outputFile = $argv[2] ?? NULL;
+
+if (!$inputFile) {
+    fail($argv[0], "input file not specified");
+}
+if (!$outputFile) {
+    fail($argv[0], "output file not specified");
+}
+
+
+function fail(string $cmd, string $msg) {
+    $usage = sprintf("%s inputfile.mp4 outputfile.txt", basename($cmd));
+    printf("Error: %s\nUsage: %s\n", $msg, $usage);
+    exit(1);
+}
+
+$tmpaudio = "/tmp/speech2txtaudio_".base64_encode($inputFile).".mp3";
+echo "extracting audio\n";
+convertVideoToMp3($inputFile, $tmpaudio);
+echo "transcribing audio\n";
+$transcription = transcribeAudio($tmpaudio);
+unlink($tmpaudio);
+echo "writing transcription to \"$outputFile\"\n";
+file_put_contents($outputFile, $transcription["text"]);
+echo "Successfully transcribed to \"$outputFile\".\n";
